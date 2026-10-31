@@ -887,6 +887,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#F2F7F5;color:#1a
     <span id="detailBadge"></span>
     <button class="btn btn-sm" id="editKpiBtn" onclick="editFromDetail()" style="background:rgba(255,255,255,0.2);color:#fff;border-color:rgba(255,255,255,0.4);display:none">Edit KPI</button>
     <button class="btn btn-sm" id="activeToggleBtn" onclick="toggleKpiActiveFromDetail()" style="background:rgba(255,255,255,0.2);color:#fff;border-color:rgba(255,255,255,0.4);display:none">Active/Inactive</button>
+    <button class="btn btn-sm" id="copyWiciBtn" onclick="copyDefFromWici(detailEditingCode)" style="background:rgba(255,255,255,0.2);color:#fff;border-color:rgba(255,255,255,0.4);display:none">Copy definition from WICI</button>
   </div>
   <div class="detail-content">
 
@@ -1347,6 +1348,23 @@ async function rejectKpiRequest(id){
   const reason=prompt('Reason for rejecting (optional):'); if(reason===null) return;
   await updateKpiRequestDB(id,{status:'rejected',reviewed_by:currentUser.name,reviewed_at:new Date().toISOString(),reason:reason||''});
   renderKpiRequests();
+}
+function copyDefFromWici(kpiCode){
+  if(!(currentUser&&currentUser.role==='admin')) return;
+  if(currentHospital==='WICI'){ alert('This is WICI \u2014 it is the master definition.'); return; }
+  const kpi=KPIs.find(k=>k.code===kpiCode); if(!kpi) return;
+  const wc=(CATALOGUES.WICI&&CATALOGUES.WICI.kpis)||[];
+  let master=wc.find(k=>_uNorm(k.name)===_uNorm(kpi.name));
+  if(!master){
+    const typed=prompt('No WICI KPI matches this name exactly.\nType the exact WICI KPI name to copy its definition from:', kpi.name);
+    if(typed===null) return;
+    master=wc.find(k=>_uNorm(k.name)===_uNorm(typed));
+    if(!master){ alert('No WICI KPI found with that name.'); return; }
+  }
+  if(!confirm('Copy WICI\'s definition ("'+master.name+'") into this KPI?\n\nThis overwrites the identity details here. The name, owner and department stay as this hospital\'s.')) return;
+  ['definition','rational','category','chapter','measureCat','measureType','frequency','method','sampleSize','target','dir','unit','numDef','denDef','equation','source','inclusion','exclusion','hasCard'].forEach(fld=>{ if(master[fld]!==undefined) kpi[fld]=master[fld]; });
+  if(master.aheadId) kpi.aheadId=master.aheadId;
+  persistMainKpis(); renderKpiList(); openDetail(kpiCode);
 }
 function toggleKpiActiveFromDetail(){
   const code=detailEditingCode; const k=KPIs.find(x=>x.code===code); if(!k) return;
@@ -2292,6 +2310,25 @@ function autoLinkToWici(){
   renderUnifiedComparison(true);
   alert('Auto-linked '+linked+' of '+UNIFIED_KPIS.length+' unified KPIs to WICI KPIs by name.\nThe remaining '+(UNIFIED_KPIS.length-linked)+' need manual linking — open each row\'s 🔗 button.');
 }
+function aheadIdOf(kpi){ if(!kpi) return null; if(kpi.aheadId) return kpi.aheadId; return unifiedIdForKpi(kpi.name); }
+function setKpiAheadId(kpiCode, val){
+  if(!(currentUser&&currentUser.role==='admin')) return;
+  const kpi=KPIs.find(k=>k.code===kpiCode); if(!kpi) return;
+  val=(val||'').trim(); let code='';
+  if(val){ const m=val.match(/KPI-[A-Za-z]+-\d+/); if(m) code=m[0].toUpperCase(); }
+  if(!code){ delete kpi.aheadId; persistMainKpis(); renderKpiList(); openDetail(kpiCode); return; }
+  kpi.aheadId=code;
+  // Adopt WICI's ideal identity details for this KPI (WICI = master), except name/owner/dept
+  if(currentHospital!=='WICI'){
+    const wc=(CATALOGUES.WICI&&CATALOGUES.WICI.kpis)||[];
+    let master=wc.find(k=>k.aheadId===code);
+    if(!master){ const u=UNIFIED_KPIS.find(x=>x.code===code); if(u){ const map=getConfig('unified_map',{})||{}; const t=(map[code]!==undefined)?map[code]:u.name; const nn=_uNorm(t); master=wc.find(k=>_uNorm(k.name)===nn); } }
+    if(master && confirm('Copy WICI\'s definition into this KPI (definition, rationale, numerator, denominator, equation, target, etc.)?\n\nThis overwrites the identity details here. The KPI\'s name, owner and department stay as this hospital\'s.')){
+      ['definition','rational','category','chapter','measureCat','measureType','frequency','method','sampleSize','target','dir','unit','numDef','denDef','equation','source','inclusion','exclusion','hasCard'].forEach(fld=>{ if(master[fld]!==undefined) kpi[fld]=master[fld]; });
+    }
+  }
+  persistMainKpis(); renderKpiList(); openDetail(kpiCode);
+}
 function unifiedIdForKpi(name){
   if(!name) return null; const map=getConfig('unified_map',{})||{}; const nn=_uNorm(name);
   for(const u of UNIFIED_KPIS){ const t=(map[u.code]!==undefined)?map[u.code]:u.name; if(t && _uNorm(t)===nn) return u.code; }
@@ -2602,7 +2639,7 @@ function renderKpiList(){
               const s=r!==null?getStatus(k,r):'nodata';
               const editable=canEdit(k);
               return `<tr>
-                <td><strong>${k.code}</strong></td>
+                <td><strong>${k.code}</strong>${(function(){var a=aheadIdOf(k);return a?'<br><span style="font-size:10px;color:var(--primary);font-weight:700">AHEAD: '+a+'</span>':'';})()}</td>
                 <td><span class="kpi-link" onclick="openDetail('${k.code}')">${k.name}</span>${k.active===false?' <span class="badge" style="background:#eee;color:#888;font-weight:600">Inactive</span>':''}</td>
                 <td style="color:var(--text2);font-size:11px">${k.owner}</td>
                 <td>${fmtTarget(k)}</td>
@@ -2978,6 +3015,7 @@ function openDetail(code){
   if(editBtn){ editBtn.style.display = (currentUser&&(currentUser.role==='admin'||currentUser.role==='manager')) ? '' : 'none'; editBtn.textContent=(currentUser&&currentUser.role==='manager')?'Request edit':'Edit KPI'; }
   const _atb=document.getElementById('activeToggleBtn'); const _kk=KPIs.find(x=>x.code===code);
   if(_atb){ _atb.style.display=(currentUser&&currentUser.role==='admin')?'':'none'; _atb.textContent=(_kk&&_kk.active===false)?'Mark Active':'Mark Inactive'; }
+  { const _cwb=document.getElementById('copyWiciBtn'); if(_cwb) _cwb.style.display=(currentUser&&currentUser.role==='admin'&&currentHospital!=='WICI')?'':'none'; }
   // Reset to view mode
   cancelDetailEdit();
   const kpiEntries=entries.filter(e=>e.code===code).sort((a,b)=>MONTHS.indexOf(a.month)-MONTHS.indexOf(b.month));
@@ -2988,7 +3026,11 @@ function openDetail(code){
   document.getElementById('detailBadge').innerHTML=badge(status);
   document.getElementById('idCardName').textContent=kpi.name;
   document.getElementById('idCardCode').textContent=kpi.code;
-  { const _aid=unifiedIdForKpi(kpi.name); const _ae=document.getElementById('idCardAhead'); if(_ae) _ae.textContent=_aid?('AHEAD ID: '+_aid):''; }
+  { const _ae=document.getElementById('idCardAhead'); const _cur=aheadIdOf(kpi)||'';
+    if(_ae){ if(currentUser&&currentUser.role==='admin'){
+        _ae.innerHTML='AHEAD ID: <input list="unifiedCodeList" value="'+_cur.replace(/"/g,'&quot;')+'" onchange="setKpiAheadId(\''+kpi.code+'\', this.value)" placeholder="(not set)" style="font-size:12px;padding:2px 6px;border:1px solid var(--border);border-radius:6px;width:150px;color:#111;background:#fff">'
+          +'<datalist id="unifiedCodeList">'+UNIFIED_KPIS.map(u=>'<option value="'+u.code+'">'+_uEsc(u.code+' \u2014 '+u.name)+'</option>').join('')+'</datalist>';
+      } else { _ae.textContent=_cur?('AHEAD ID: '+_cur):''; } } }
   document.getElementById('idCardChapter').textContent=kpi.chapter;
   document.getElementById('idCardBadge').innerHTML=badge(status);
 
